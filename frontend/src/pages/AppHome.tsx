@@ -23,8 +23,8 @@ const AppHome = ({ i18n, vcInstance, callContract, setState }: Props) => {
 
 	return (
 		<div className="space-y-4 max-w-3xl mx-auto">
-			<p className="text-2xl">Buy me a coffee</p>
-			{!vcInstance && <p className="text-xl">{i18n.connectWalletToUseDapp}</p>}
+			<p className="text-2xl">Joint Accounts Home</p>
+			{/* {!vcInstance && <p className="text-xl">{i18n.connectWalletToUseDapp}</p>}
 			<TextInput
 				_ref={beneficiaryAddressRef}
 				disabled={!vcInstance}
@@ -84,7 +84,7 @@ const AppHome = ({ i18n, vcInstance, callContract, setState }: Props) => {
 						{i18n.confirmTransactionOnYourViteWalletApp}
 					</p>
 				</Modal>
-			)}
+			)} */}
 		</div>
 	);
 };
