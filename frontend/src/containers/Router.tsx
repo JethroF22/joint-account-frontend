@@ -11,7 +11,8 @@ import { VCSessionKey } from '../utils/viteConnect';
 import { PROD } from '../utils/constants';
 import PageContainer from './PageContainer';
 import CafeContract from '../contracts/Cafe';
-import History from '../pages/History';
+import RequireAuth from './RequireAuth';
+import AuthenticatedRedirect from './AuthenticatedRedirect';
 
 const providerWsURLs = {
 	...(PROD ? {} : { localnet: 'ws://localhost:23457' }),
@@ -131,10 +132,22 @@ const Router = ({ setState, vcInstance, networkType }: Props) => {
 		<BrowserRouter>
 			<PageContainer>
 				<Routes>
-					<Route path="/" element={<Landing />} />
-					<Route path="/app" element={<AppHome />} />
-					<Route path="/history" element={<History />} />
-					<Route path="*" element={<Navigate to="/" />} />
+					<Route
+						path="/"
+						element={
+							<AuthenticatedRedirect>
+								<Landing />
+							</AuthenticatedRedirect>
+						}
+					/>
+					<Route
+						path="/app"
+						element={
+							<RequireAuth>
+								<AppHome />
+							</RequireAuth>
+						}
+					/>
 				</Routes>
 			</PageContainer>
 			<Toast />

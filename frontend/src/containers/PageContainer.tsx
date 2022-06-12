@@ -4,10 +4,10 @@ import A from '../components/A';
 import { NetworkTypes, State } from '../utils/types';
 import { prefersDarkTheme } from '../utils/misc';
 import { connect } from '../utils/globalContext';
-import ViteConnectButton from './ViteConnectButton';
 import ViteLogo from '../assets/ViteLogo';
 import { PROD } from '../utils/constants';
 import DropdownButton from '../components/DropdownButton';
+import ViteLogoutButton from './ViteLogoutButton';
 
 type Props = State & {
 	noPadding?: boolean;
@@ -21,6 +21,7 @@ const PageContainer = ({
 	i18n,
 	setState,
 	children,
+	vcInstance,
 }: Props) => {
 	const [theme, themeSet] = useState(localStorage.theme);
 
@@ -85,7 +86,7 @@ const PageContainer = ({
 							</>
 						}
 					/>
-					<ViteConnectButton />
+					{vcInstance && <ViteLogoutButton />}
 					<DropdownButton
 						buttonJsx={
 							<div className="w-8 h-8 xy">
