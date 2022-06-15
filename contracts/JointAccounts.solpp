@@ -1,0 +1,423 @@
+// SPDX-License-Identifier: MIT
+/// @title Joint Account implementation for GR14 Hackathon. 
+/// Modified from version created by Samuele Marro: https://github.com/samuelemarro/gr13-vite-joint-account
+
+pragma soliditypp ^0.8.0;
+
+interface IJointAccountsViews {
+    function motionExists(uint256 _accountId, uint256 _motionId) external view returns (bool);
+    function accountExists(uint256 _accountId) external view returns(bool);
+    function accountsCallback(JointAccount memory accounts) external;
+    function userAccountsCallback(uint256 _accountId, address _userAddress) external;
+}
+
+enum MotionType { TRANSFER, ADD_MEMBER, REMOVE_MEMBER, CHANGE_THRESHOLD }
+
+struct Motion {
+    MotionType motionType;
+    vitetoken tokenId;
+    uint256 transferAmount;
+    address to;
+    uint256 destinationAccount;
+    uint256 threshold;
+
+    address proposer;
+    uint256 voteCount;
+    bool active;
+}
+
+struct JointAccount {
+    address[] members;
+    uint256 approvalThreshold;
+    bool isStatic;
+    bool isMemberOnlyDeposit;
+}
+
+contract JointAccounts {
+    address public viewsContractAddress;
+
+    event AccountCreated (
+        uint256 indexed accountId,
+        address indexed creator
+    );
+
+    event MotionCreated (
+        uint256 indexed accountId,
+        uint256 indexed motionId,
+        uint256 indexed motionType,
+        address proposer,
+        vitetoken tokenId,
+        uint256 transferAmount,
+        address to,
+        uint256 destinationAccount,
+        uint256 threshold
+    );
+
+    event MotionCancelled (
+        uint256 indexed accountId,
+        uint256 indexed motionId
+    );
+
+    event Vote (
+        uint256 indexed accountId,
+        uint256 indexed motionId,
+        address indexed voter,
+        bool vote
+    );
+
+    event Transfer (
+        uint256 indexed accountId,
+        uint256 indexed motionId,
+        vitetoken indexed tokenId,
+        address to,
+        uint256 destinationAccount,
+        uint256 amount
+    );
+
+    event MemberAdded (
+        uint256 indexed accountId,
+        uint256 indexed motionId,
+        address indexed member
+    );
+
+    event MemberRemoved (
+        uint256 indexed accountId,
+        uint256 indexed motionId,
+        address indexed member
+    );
+
+    event ThresholdChanged (
+        uint256 indexed accountId,
+        uint256 indexed motionId,
+        uint256 threshold
+    );
+
+    event Deposit (
+        uint256 indexed accountId,
+        vitetoken indexed tokenId,
+        address indexed from,
+        uint256 amount
+    );
+
+    uint256 private constant NULL = 2**256 - 1;
+    address private constant NULL_ADDRESS = "vite_0000000000000000000000000000000000000000a4f3a0cb58";
+    vitetoken private constant NULL_TOKEN = "tti_000000000000000000004cfd";
+
+    // accountId => (motionId => (address => bool)) mapping
+    // Note that structs cannot contain mappings
+    mapping(uint256 => mapping(uint256 => mapping(address => bool))) public votes;
+
+    // accountId => (tokenId => amount) mapping
+    mapping(uint256 => mapping(vitetoken => uint256)) public balances;
+
+    // memberAddress => JointAccount[] mapping 
+    mapping(address => uint256[]) public userAccounts;
+    
+    JointAccount[] public accounts;
+    IJointAccountsViews viewsContract;
+    
+    function setJointAccountViewsContractAddress(address _contractAddress) external {
+        viewsContract = IJointAccountsViews(_contractAddress);
+    }
+
+    /// @notice Creates a new joint account
+    ///
+    /// @param _members Account members
+    /// @param _approvalThreshold Approval threshold for motions
+    /// @param _isStatic If true, members cannot be added or removed, and the approval threshold cannot be changed
+    /// @param _isMemberOnlyDeposit If true, only members can deposit to the joint account
+    function createAccount(address[] memory _members, uint256 _approvalThreshold, bool _isStatic, bool _isMemberOnlyDeposit) external returns(uint256) {
+        require(_members.length > 0, "E1"); // "E1" -> "At least one member must be specified"
+        require(_approvalThreshold > 0, "E3"); // "E3" -> "Approval threshold must be > 0"
+        require(_approvalThreshold <= _members.length, "E4"); // "E4" -> "Approval threshold must be <= the number of members"
+
+        // Initialize an empty sub-account
+        JointAccount storage newAccount = accounts.push();
+        newAccount.members = _members;
+        newAccount.approvalThreshold = _approvalThreshold;
+        newAccount.isStatic = _isStatic;
+        newAccount.isMemberOnlyDeposit = _isMemberOnlyDeposit;
+
+        uint256 accountId = accounts.length - 1;
+        viewsContract.accountsCallback(newAccount);
+
+        for (uint256 index = 0; index < newAccount.members.length; index++) {
+            // uint256 accountIndex = userAccounts[newAccount.members[index]].length;
+            userAccounts[newAccount.members[index]].push(accountId);
+            viewsContract.userAccountsCallback(accountId, newAccount.members[index]);
+        }
+        // Call callback function explicitly to return data to the caller.
+
+        emit AccountCreated(accountId, msg.sender);
+
+        return accountId;
+    }
+
+    function getMembers(uint256 _accountId) external view returns (address[] memory) {
+        _accountCheck(_accountId);
+        return accounts[_accountId].members;
+    }
+
+    // function getUserAccounts(address _userAddress) external {
+    //     Listener sender = Listener(msg.sender);
+    //     // Call callback function explicitly to return data to the caller.
+    //     sender.userAccountsCallback(userAccounts[_userAddress], _userAddress);
+    // }
+    
+    function accountsLength() external view returns(uint256) {
+        return accounts.length;
+    }
+
+    function _accountCheck(uint256 _accountId) private view {
+        require(_accountId < accounts.length, "Account does not exist");
+    }
+
+    function balanceOf(uint256 _accountId, vitetoken _tokenId) public view returns(uint256) {
+        _accountCheck(_accountId);
+        return balances[_accountId][_tokenId];
+    }
+
+    // ===Contract size helpers===
+
+    // These functions help to reduce the contract size by avoiding the need to store the entire
+    // revert messages for every function.
+
+    function _motionChecks(uint256 _accountId) private view {
+        // Already handled by isMember
+        // require(accountExists(_accountId), "Account does not exist");
+        require(isMember(_accountId, msg.sender), "E7"); // "E7" -> "Not a member"
+    }
+
+    function _balanceCheck(uint256 _accountId, vitetoken _tokenId, uint256 _transferAmount) private view {
+        require(balanceOf(_accountId, _tokenId) >= _transferAmount, "E8"); // "E8" -> "Insufficient balance"
+    }
+
+    function _destinationAccountCheck(uint256 _destinationAccount, address _proposer) private view {
+        // Account existence check is handled by isMember
+        // isMember is first due to the short-circuit behaviour of Solidity's || operator
+        require(isMember(_destinationAccount, _proposer) || !accounts[_destinationAccount].isMemberOnlyDeposit, "E9"); // "E9" -> "Not a member"
+    }
+    
+    /// @notice Returns true if the given address is a member
+    ///
+    /// @param _accountId Account id
+    /// @param _member The queried address
+    function isMember(uint256 _accountId, address _member) public view returns (bool) {
+        require(_accountId < accounts.length, "E5"); // "E5" -> "Account does not exist"
+        return _findMember(_accountId, _member) != NULL;
+    }
+
+    // ===Motion Creation===
+
+    /// @notice Creates a new transfer motion to either an address or a joint account.
+    ///
+    /// @param _accountId Account id
+    /// @param _tokenId The token id of the transfer
+    /// @param _transferAmount The amount to transfer
+    /// @param _to The address to transfer to. Must be NULL_ADDRESS if _destinationAccount is specified
+    /// @param _destinationAccount The account id to transfer to. Must be NULL if _to is specified.
+    ///        If the proposer is not a member and the destination is a member-only deposit account, the transfer will fail
+    function createTransferMotion(uint256 _accountId, vitetoken _tokenId, uint256 _transferAmount, address _to, uint256 _destinationAccount) external {
+        _motionChecks(_accountId);
+        _balanceCheck(_accountId, _tokenId, _transferAmount);
+        // accounts[_accountId].motions.push(Motion(MotionType.TRANSFER, _tokenId, _transferAmount, _to, _destinationAccount, NULL, msg.sender, 0, true));
+
+        require(_to != NULL_ADDRESS || _destinationAccount != NULL, "E11"); // "E11" -> "Address/destination account must be specified"
+        require(_to == NULL_ADDRESS || _destinationAccount == NULL, "E12"); // "E12" -> "Cannot specify both address & destination account"
+
+        if (_destinationAccount != NULL) {
+            _destinationAccountCheck(_destinationAccount, msg.sender);
+        }
+
+        // emit MotionCreated(_accountId, accounts[_accountId].motions.length - 1, uint256(MotionType.TRANSFER), msg.sender, _tokenId, _transferAmount, _to, _destinationAccount, NULL);
+        _voteMotion(_accountId, 0);
+    }
+
+    /// @notice Creates a new add member motion
+    ///
+    /// @param _accountId Account id
+    /// @param _member The address to add
+    function createAddMemberMotion(uint256 _accountId, address _member) external {
+        _motionChecks(_accountId);
+        require(!accounts[_accountId].isStatic, "E13"); // "E13" -> "Account is static"
+        require(!isMember(_accountId, _member), "E14"); // "E14" -> "Address is already a member"
+        // accounts[_accountId].motions.push(Motion(MotionType.ADD_MEMBER, NULL_TOKEN, NULL, _member, NULL, NULL, msg.sender, 0, true));
+
+        // emit MotionCreated(_accountId, accounts[_accountId].motions.length - 1, uint256(MotionType.ADD_MEMBER), msg.sender, NULL_TOKEN, NULL, _member, NULL, NULL);
+        _voteMotion(_accountId, 0);
+    }
+
+    /// @notice Creates a new remove member motion
+    ///
+    /// @param _accountId Account id
+    /// @param _member The address to remove
+    function createRemoveMemberMotion(uint256 _accountId, address _member) external {
+        _motionChecks(_accountId);
+        require(!accounts[_accountId].isStatic, "E13"); // "E13" -> "Account is static"
+        require(isMember(_accountId, _member), "E14"); // "E14" -> "Address is already a member"
+        require(accounts[_accountId].approvalThreshold < accounts[_accountId].members.length, "E15"); // "E15" -> "Removing would make the threshold impossible to reach"
+
+        // accounts[_accountId].motions.push(Motion(MotionType.REMOVE_MEMBER, NULL_TOKEN, NULL, _member, NULL, NULL, msg.sender, 0, true));
+
+        // emit MotionCreated(_accountId, accounts[_accountId].motions.length - 1, uint256(MotionType.REMOVE_MEMBER), msg.sender, NULL_TOKEN, NULL, _member, NULL, NULL);
+        _voteMotion(_accountId, 0);
+    }
+
+    /// @notice Creates a new change threshold motion
+    ///
+    /// @param _accountId Account id
+    /// @param _threshold The new threshold
+    ///
+    /// @dev Note that it is possible to set the threshold to the current threshold
+    function createChangeThresholdMotion(uint256 _accountId, uint256 _threshold) external {
+        _motionChecks(_accountId);
+        require(!accounts[_accountId].isStatic, "E13"); // "E13" -> "Account is static"
+        require(_threshold > 0, "E3"); // "E3" -> "Approval threshold must be > 0"
+        require(_threshold <= accounts[_accountId].members.length, "E16"); // "E16" -> "Threshold too high"
+
+        // accounts[_accountId].motions.push(Motion(MotionType.CHANGE_THRESHOLD, NULL_TOKEN, NULL, NULL_ADDRESS, NULL, _threshold, msg.sender, 0, true));
+
+        // emit MotionCreated(_accountId, accounts[_accountId].motions.length - 1, uint256(MotionType.CHANGE_THRESHOLD), msg.sender, NULL_TOKEN, NULL, NULL_ADDRESS, NULL, _threshold);
+        _voteMotion(_accountId, 0);
+    }
+
+    function _transfer(uint256 _accountId, uint256 _motionId, vitetoken _tokenId, uint256 _transferAmount, address _to, uint256 _destinationAccount, address _proposer) internal {
+        _balanceCheck(_accountId, _tokenId, _transferAmount);
+        balances[_accountId][_tokenId] -= _transferAmount;
+
+        if (_to == NULL_ADDRESS) {
+            // Transfer to another joint account
+            _destinationAccountCheck(_destinationAccount, _proposer);
+            balances[_destinationAccount][_tokenId] += _transferAmount;
+        } else {
+            payable(_to).transfer(_tokenId, _transferAmount);
+        }
+
+        emit Transfer(_accountId, _motionId, _tokenId, _to, _destinationAccount, _transferAmount);
+    }
+
+    function _addMember(uint256 _accountId, uint256 _motionId, address _member) internal {
+        require(!isMember(_accountId, _member), "E14"); // "E14" -> "Address is already a member"
+        accounts[_accountId].members.push(_member);
+
+        emit MemberAdded(_accountId, _motionId, _member);
+    }
+
+    function _findMember(uint256 _accountId, address _member) private view returns(uint256) {
+        bool found = false;
+        uint256 index;
+        for (index = 0; index < accounts[_accountId].members.length && !found; index++) {
+            if (accounts[_accountId].members[index] == _member) {
+                found = true;
+            }
+        }
+
+        if (found) {
+            return index;
+        } else {
+            return NULL;
+        }
+    }
+
+    function _removeMember(uint256 _accountId, uint256 _motionId, address _member) internal {
+        require(accounts[_accountId].approvalThreshold < accounts[_accountId].members.length, "E17"); // "E17" -> "Removing would make the threshold too high"
+
+        uint256 index = _findMember(_accountId, _member);
+        require(isMember(_accountId, _member), "E18"); // "E18" -> "Address is not a member"
+ 
+        for (uint256 i = index; i < accounts[_accountId].members.length - 1; i++) {
+            accounts[_accountId].members[i] = accounts[_accountId].members[i + 1];
+        }
+
+        accounts[_accountId].members.pop();
+
+        emit MemberRemoved(_accountId, _motionId, _member);
+    }
+
+    function _changeThreshold(uint256 _accountId, uint256 _motionId, uint256 _threshold) internal {
+        require(_threshold <= accounts[_accountId].members.length, "E16"); // "E16" -> "Threshold too high"
+
+        accounts[_accountId].approvalThreshold = _threshold;
+
+        emit ThresholdChanged(_accountId, _motionId, _threshold);
+    }
+
+    function _voteMotion(uint256 _accountId, uint256 _motionId) internal {
+        votes[_accountId][_motionId][msg.sender] = true;
+        // accounts[_accountId].motions[_motionId].voteCount++;
+
+        // emit Vote(_accountId, _motionId, msg.sender, true);
+
+        // if (accounts[_accountId].motions[_motionId].voteCount >= accounts[_accountId].approvalThreshold) {
+            // accounts[_accountId].motions[_motionId].active = false;
+
+            // Note: Solidity doesn't have switch statements
+            // if (accounts[_accountId].motions[_motionId].motionType == MotionType.TRANSFER) {
+            //     _transfer(_accountId, _motionId, accounts[_accountId].motions[_motionId].tokenId, accounts[_accountId].motions[_motionId].transferAmount, accounts[_accountId].motions[_motionId].to, accounts[_accountId].motions[_motionId].destinationAccount, accounts[_accountId].motions[_motionId].proposer);
+            // } else if (accounts[_accountId].motions[_motionId].motionType == MotionType.ADD_MEMBER) {
+            //     _addMember(_accountId, _motionId, accounts[_accountId].motions[_motionId].to);
+            // } else if (accounts[_accountId].motions[_motionId].motionType == MotionType.REMOVE_MEMBER) {
+            //     _removeMember(_accountId, _motionId, accounts[_accountId].motions[_motionId].to);
+            // } else if (accounts[_accountId].motions[_motionId].motionType == MotionType.CHANGE_THRESHOLD) {
+            //     _changeThreshold(_accountId, _motionId, accounts[_accountId].motions[_motionId].threshold);
+            // }
+        // }
+    }
+
+    // ===Deposit===
+
+    /// @notice Deposits funds to a joint account. Can only be called by members
+    ///
+    /// @param _accountId Account id
+    function deposit(uint256 _accountId) external payable {
+        // Already handled by isMember
+        // require(accountExists(_accountId), "Account does not exist");
+        // isMember is first due to the short-circuit behaviour of Solidity's || operator
+        require(isMember(_accountId, msg.sender) || !accounts[_accountId].isMemberOnlyDeposit, "E18"); // "E18" -> "Address is not a member"
+
+        balances[_accountId][msg.token] += msg.value;
+
+        emit Deposit(_accountId, msg.token, msg.sender, msg.value);
+    }
+
+    // ===Motion Voting===
+
+    /// @notice Votes on a motion
+    ///
+    /// @param _accountId Account id
+    /// @param _motionId The id of the motion to vote on
+    function voteMotion(uint256 _accountId, uint256 _motionId) external {
+        _motionChecks(_accountId);
+        // require(accounts[_accountId].motions[_motionId].active, "E19"); // E19 -> "Motion is not active"
+        // require(!votes[_accountId][_motionId][msg.sender] || accounts[_accountId].motions[_motionId].voteCount >= accounts[_accountId].approvalThreshold, "Already voted on this motion");
+        _voteMotion(_accountId, _motionId);
+    }
+
+    /// @notice Cancels a vote on a motion
+    ///
+    /// @param _accountId Account id
+    /// @param _motionId The id of the motion to cancel the vote on
+    function cancelVote(uint256 _accountId, uint256 _motionId) external {
+        _motionChecks(_accountId);
+        // require(accounts[_accountId].motions[_motionId].active, "E19"); // E19 -> "Motion is not active"
+        // require(votes[_accountId][_motionId][msg.sender], "E20"); // E20 -> Not voted on this motion
+        // votes[_accountId][_motionId][msg.sender] = false;
+        // accounts[_accountId].motions[_motionId].voteCount--;
+
+        emit Vote(_accountId, _motionId, msg.sender, false);
+    }
+
+    /// @notice Cancels a motion
+    ///
+    /// @param _accountId Account id
+    /// @param _motionId The id of the motion to cancel
+    function cancelMotion(uint256 _accountId, uint256 _motionId) external {
+        _motionChecks(_accountId);
+        require(isMember(_accountId, msg.sender), "E18"); // "E18" -> "Address is not a member"
+        // require(accounts[_accountId].motions[_motionId].active, "E19"); // E19 -> "Motion is not active"
+        // require(accounts[_accountId].motions[_motionId].proposer == msg.sender, "E21"); // E21 -> "Not the proposer of this motion"
+        // accounts[_accountId].motions[_motionId].active = false;
+
+        emit MotionCancelled(_accountId, _motionId);
+    }
+}
