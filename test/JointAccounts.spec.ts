@@ -131,18 +131,18 @@ describe('test JointAccounts', function () {
 			[jointAccountsViewsContract.address],
 			{ caller: deployer }
 		);
-		await jointAccountsViewsContract.call(
-			'setJointAccountContractAddress',
-			[jointAccountsContract.address],
-			{ caller: deployer }
-		);
+		// await jointAccountsViewsContract.call(
+		// 	'setJointAccountContractAddress',
+		// 	[jointAccountsContract.address],
+		// 	{ caller: deployer }
+		// );
 
 		// expect(await jointAccountsContract.query('viewsContractAddress')).to.be.deep.equal([
 		// 	jointAccountsViewsContract.address,
 		// ]);
-		expect(await jointAccountsViewsContract.query('accountsContractAddress')).to.be.deep.equal([
-			jointAccountsContract.address,
-		]);
+		// expect(await jointAccountsViewsContract.query('accountsContractAddress')).to.be.deep.equal([
+		// 	jointAccountsContract.address,
+		// ]);
 	});
 
 	describe('account creation', function () {
@@ -181,6 +181,195 @@ describe('test JointAccounts', function () {
 					creator: alice.address,
 				}, // Account created
 			]);
+		});
+
+		it('creates an account with as many members as required votes', async function () {
+			await jointAccountsContract.call('createAccount', [[alice.address, bob.address], 2, 1, 0], {
+				caller: alice,
+			});
+			await sleep(3000);
+
+			expect(await jointAccountsViewsContract.query('accountExists', [0])).to.be.deep.equal(['1']);
+			expect(await jointAccountsViewsContract.query('isStatic', [0])).to.be.deep.equal(['1']);
+			expect(await jointAccountsViewsContract.query('isMemberOnlyDeposit', [0])).to.be.deep.equal([
+				'0',
+			]);
+			expect(await jointAccountsViewsContract.query('getMembers', [0])).to.be.deep.equal([
+				[alice.address, bob.address],
+			]);
+			expect(await jointAccountsViewsContract.query('approvalThreshold', [0])).to.be.deep.equal([
+				'2',
+			]);
+
+			const events = await jointAccountsContract.getPastEvents('allEvents', {
+				fromHeight: 0,
+				toHeight: 100,
+			});
+			checkEvents(events, [
+				{
+					'0': '0',
+					accountId: '0',
+					'1': alice.address,
+					creator: alice.address,
+				}, // Account created
+			]);
+		});
+
+		it('creates two accounts', async function () {
+			await jointAccountsContract.call('createAccount', [[alice.address, bob.address], 1, 1, 0], {
+				caller: alice,
+			});
+			await jointAccountsContract.call(
+				'createAccount',
+				[[alice.address, charlie.address], 1, 1, 0],
+				{
+					caller: alice,
+				}
+			);
+			await sleep(3000);
+
+			expect(await jointAccountsViewsContract.query('accountExists', [0])).to.be.deep.equal(['1']);
+			expect(await jointAccountsViewsContract.query('accountExists', [1])).to.be.deep.equal(['1']);
+			expect(await jointAccountsViewsContract.query('accountExists', [2])).to.be.deep.equal(['0']);
+
+			const events = await jointAccountsContract.getPastEvents('allEvents', {
+				fromHeight: 0,
+				toHeight: 100,
+			});
+			checkEvents(events, [
+				{
+					'0': '0',
+					accountId: '0',
+					'1': alice.address,
+					creator: alice.address,
+				}, // Account created
+				{
+					'0': '1',
+					accountId: '1',
+					'1': alice.address,
+					creator: alice.address,
+				}, // Account created
+			]);
+		});
+	});
+
+	describe('deposit', function () {
+		it('deposits to an account', async function () {
+			await jointAccountsContract.call('createAccount', [[alice.address, bob.address], 2, 1, 0], {
+				caller: alice,
+			});
+
+			await deployer.sendToken(alice.address, '1000000', testTokenId);
+			await alice.receiveAll();
+			await jointAccountsContract.call('deposit', [0], {
+				caller: alice,
+				amount: '1000000',
+				tokenId: testTokenId,
+			});
+			await waitForContractReceive(testTokenId);
+
+			await sleep(3000);
+
+			expect(
+				await jointAccountsViewsContract.query('balanceOf', [0, testTokenId])
+			).to.be.deep.equal(['1000000']);
+
+			const events = await jointAccountsContract.getPastEvents('allEvents', {
+				fromHeight: 0,
+				toHeight: 100,
+			});
+			checkEvents(events, [
+				{
+					'0': '0',
+					accountId: '0',
+					'1': alice.address,
+					creator: alice.address,
+				}, // Account created
+				{
+					'0': '0',
+					accountId: '0',
+					'1': testTokenId,
+					tokenId: testTokenId,
+					'2': alice.address,
+					from: alice.address,
+					'3': '1000000',
+					amount: '1000000',
+				}, // Alice deposits
+			]);
+		});
+
+		it('deposits as a non-member to a regular account', async function () {
+			await jointAccountsContract.call('createAccount', [[alice.address, bob.address], 2, 1, 0], {
+				caller: alice,
+			});
+
+			await deployer.sendToken(charlie.address, '1000000', testTokenId);
+			await charlie.receiveAll();
+			await jointAccountsContract.call('deposit', [0], {
+				caller: charlie,
+				amount: '1000000',
+				tokenId: testTokenId,
+			});
+			await waitForContractReceive(testTokenId);
+
+			await sleep(3000);
+
+			expect(
+				await jointAccountsViewsContract.query('balanceOf', [0, testTokenId])
+			).to.be.deep.equal(['1000000']);
+
+			const events = await jointAccountsContract.getPastEvents('allEvents', {
+				fromHeight: 0,
+				toHeight: 100,
+			});
+			checkEvents(events, [
+				{
+					'0': '0',
+					accountId: '0',
+					'1': alice.address,
+					creator: alice.address,
+				}, // Account created
+				{
+					'0': '0',
+					accountId: '0',
+					'1': testTokenId,
+					tokenId: testTokenId,
+					'2': charlie.address,
+					from: charlie.address,
+					'3': '1000000',
+					amount: '1000000',
+				}, // Charlie deposits
+			]);
+		});
+
+		it('fails to deposit to a non-existent account', async function () {
+			await deployer.sendToken(alice.address, '1000000', testTokenId);
+			await alice.receiveAll();
+
+			expect(
+				jointAccountsContract.call('deposit', [0], {
+					caller: alice,
+					amount: '1000000',
+					tokenId: testTokenId,
+				})
+			).to.be.eventually.rejectedWith('revert');
+		});
+
+		it('fails to deposit as a non-member to a member-only deposit account', async function () {
+			await jointAccountsContract.call('createAccount', [[alice.address, bob.address], 2, 1, 1], {
+				caller: alice,
+			});
+
+			await deployer.sendToken(charlie.address, '1000000', testTokenId);
+			await charlie.receiveAll();
+
+			expect(
+				jointAccountsContract.call('deposit', [0], {
+					caller: charlie,
+					amount: '1000000',
+					tokenId: testTokenId,
+				})
+			).to.be.eventually.rejectedWith('revert');
 		});
 	});
 });
