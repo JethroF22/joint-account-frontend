@@ -7,8 +7,9 @@ pragma soliditypp ^0.8.0;
 interface IJointAccountsViews {
     function motionExists(uint256 _accountId, uint256 _motionId) external view returns (bool);
     function accountExists(uint256 _accountId) external view returns(bool);
-    function accountsCallback(JointAccount memory accounts) external;
+    function accountsCallback(JointAccount memory __accounts) external;
     function userAccountsCallback(uint256 _accountId, address _userAddress) external;
+    function depositCallback(uint256 _accountId, vitetoken _tokenId, uint256 _amount) external;
 }
 
 enum MotionType { TRANSFER, ADD_MEMBER, REMOVE_MEMBER, CHANGE_THRESHOLD }
@@ -376,6 +377,7 @@ contract JointAccounts {
         require(isMember(_accountId, msg.sender) || !accounts[_accountId].isMemberOnlyDeposit, "E18"); // "E18" -> "Address is not a member"
 
         balances[_accountId][msg.token] += msg.value;
+        viewsContract.depositCallback(_accountId, msg.token, balances[_accountId][msg.token]);
 
         emit Deposit(_accountId, msg.token, msg.sender, msg.value);
     }

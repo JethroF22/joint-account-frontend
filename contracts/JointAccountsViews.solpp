@@ -31,13 +31,6 @@ struct JointAccount {
     bool isMemberOnlyDeposit;
 }
 
-interface IJointAccounts {
-    function accounts() external view returns (JointAccount[] memory); 
-    function balances(uint256 arg1, vitetoken arg2) external view returns (uint256); 
-    function votes(uint256 arg1, uint256 arg2, address arg3) external view returns (bool);
-    function getAccounts() external view;
-    function getUserAccounts(address userAddress) external view;
-}
 
 // interface Listener {
 //     function accountsCallback(JointAccount memory accounts) external;
@@ -47,14 +40,14 @@ interface IJointAccounts {
 // contract JointAccountsViews is Listener {
 contract JointAccountsViews {
     address public accountsContractAddress;
-    IJointAccounts public jointsAccountsContract;
     JointAccount[] accounts;
     mapping(address => uint256[]) userAccounts;
+    mapping(uint256 => mapping(vitetoken => uint256)) public balances;
 
-    function setJointAccountContractAddress(address _contractAddress) external {
-        accountsContractAddress = _contractAddress;
-        jointsAccountsContract = IJointAccounts(accountsContractAddress);
-    }
+    // function setJointAccountContractAddress(address _contractAddress) external {
+    //     accountsContractAddress = _contractAddress;
+    //     jointsAccountsContract = IJointAccounts(accountsContractAddress);
+    // }
 
     function accountsCallback(JointAccount memory _account) external {
         JointAccount storage newAccount = accounts.push();
@@ -66,6 +59,10 @@ contract JointAccountsViews {
     function userAccountsCallback(uint256 _accountId, address _userAddress) external {
         accounts[_accountId].members.push(_userAddress);
         userAccounts[_userAddress].push(_accountId);
+    }
+
+    function depositCallback(uint256 _accountId, vitetoken _tokenId, uint256 _amount) external {
+        balances[_accountId][_tokenId] = _amount;
     }
 
     function getAccount(uint256 _accountId) external view returns(JointAccount memory) {
@@ -127,7 +124,7 @@ contract JointAccountsViews {
     /// @param _tokenId Token Id
     function balanceOf(uint256 _accountId, vitetoken _tokenId) external view returns(uint256) {
         _accountCheck(_accountId);
-        return IJointAccounts(accountsContractAddress).balances(_accountId, _tokenId);
+        return balances[_accountId][_tokenId];
     }
 
     /// @notice Returns the current members
