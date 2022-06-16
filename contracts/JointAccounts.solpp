@@ -5,11 +5,12 @@
 pragma soliditypp ^0.8.0;
 
 interface IJointAccountsViews {
-    function motionExists(uint256 _accountId, uint256 _motionId) external view returns (bool);
-    function accountExists(uint256 _accountId) external view returns(bool);
     function accountsCallback(JointAccount memory __accounts) external;
     function userAccountsCallback(uint256 _accountId, address _userAddress) external;
     function depositCallback(uint256 _accountId, vitetoken _tokenId, uint256 _amount) external;
+    function motionCallback(uint256 _accountId, uint256 _motionType, vitetoken _tokenId, uint256 _transferAmount, address _to, uint256 _destinationAccount, uint256 _threshold, address _proposer, uint256 _voteCount, bool _active) external;
+    function voteCallback(uint256 _accountId, uint256 _motionId, address _voter, uint256 _voteCount, bool _active) external;
+    function transferCallback(uint256 _accountId, uint256 _motionId, vitetoken _tokenId, uint256 _transferAmount, address _to, uint256 _destinationAccount) external;
 }
 
 enum MotionType { TRANSFER, ADD_MEMBER, REMOVE_MEMBER, CHANGE_THRESHOLD }
@@ -106,13 +107,16 @@ contract JointAccounts {
 
     // accountId => (motionId => (address => bool)) mapping
     // Note that structs cannot contain mappings
-    mapping(uint256 => mapping(uint256 => mapping(address => bool))) public votes;
+    mapping(uint256 => mapping(uint256 => mapping(address => bool))) votes;
 
     // accountId => (tokenId => amount) mapping
-    mapping(uint256 => mapping(vitetoken => uint256)) public balances;
+    mapping(uint256 => mapping(vitetoken => uint256)) balances;
 
     // memberAddress => JointAccount[] mapping 
-    mapping(address => uint256[]) public userAccounts;
+    mapping(address => uint256[]) userAccounts;
+    
+    // accountId => Motion mapping
+    mapping(uint256 => Motion[]) motions;
     
     JointAccount[] public accounts;
     IJointAccountsViews viewsContract;
@@ -221,7 +225,7 @@ contract JointAccounts {
     function createTransferMotion(uint256 _accountId, vitetoken _tokenId, uint256 _transferAmount, address _to, uint256 _destinationAccount) external {
         _motionChecks(_accountId);
         _balanceCheck(_accountId, _tokenId, _transferAmount);
-        // accounts[_accountId].motions.push(Motion(MotionType.TRANSFER, _tokenId, _transferAmount, _to, _destinationAccount, NULL, msg.sender, 0, true));
+        motions[_accountId].push(Motion(MotionType.TRANSFER, _tokenId, _transferAmount, _to, _destinationAccount, NULL, msg.sender, 0, true));
 
         require(_to != NULL_ADDRESS || _destinationAccount != NULL, "E11"); // "E11" -> "Address/destination account must be specified"
         require(_to == NULL_ADDRESS || _destinationAccount == NULL, "E12"); // "E12" -> "Cannot specify both address & destination account"
@@ -230,8 +234,10 @@ contract JointAccounts {
             _destinationAccountCheck(_destinationAccount, msg.sender);
         }
 
-        // emit MotionCreated(_accountId, accounts[_accountId].motions.length - 1, uint256(MotionType.TRANSFER), msg.sender, _tokenId, _transferAmount, _to, _destinationAccount, NULL);
-        _voteMotion(_accountId, 0);
+        viewsContract.motionCallback(_accountId, uint256(MotionType.TRANSFER), _tokenId, _transferAmount, _to, _destinationAccount, NULL, msg.sender, 0, true);
+
+        emit MotionCreated(_accountId, motions[_accountId].length - 1, uint256(MotionType.TRANSFER), msg.sender, _tokenId, _transferAmount, _to, _destinationAccount, NULL);
+        _voteMotion(_accountId, motions[_accountId].length - 1);
     }
 
     /// @notice Creates a new add member motion
@@ -294,6 +300,8 @@ contract JointAccounts {
             payable(_to).transfer(_tokenId, _transferAmount);
         }
 
+        viewsContract.transferCallback(_accountId, _motionId, _tokenId, _transferAmount, _to, _destinationAccount);
+
         emit Transfer(_accountId, _motionId, _tokenId, _to, _destinationAccount, _transferAmount);
     }
 
@@ -345,24 +353,26 @@ contract JointAccounts {
 
     function _voteMotion(uint256 _accountId, uint256 _motionId) internal {
         votes[_accountId][_motionId][msg.sender] = true;
-        // accounts[_accountId].motions[_motionId].voteCount++;
+        motions[_accountId][_motionId].voteCount++;
 
-        // emit Vote(_accountId, _motionId, msg.sender, true);
+        viewsContract.voteCallback(_accountId, _motionId, msg.sender, motions[_accountId][_motionId].voteCount, true);
 
-        // if (accounts[_accountId].motions[_motionId].voteCount >= accounts[_accountId].approvalThreshold) {
-            // accounts[_accountId].motions[_motionId].active = false;
+        emit Vote(_accountId, _motionId, msg.sender, true);
+
+        if (motions[_accountId][_motionId].voteCount >= accounts[_accountId].approvalThreshold) {
+            motions[_accountId][_motionId].active = false;
 
             // Note: Solidity doesn't have switch statements
-            // if (accounts[_accountId].motions[_motionId].motionType == MotionType.TRANSFER) {
-            //     _transfer(_accountId, _motionId, accounts[_accountId].motions[_motionId].tokenId, accounts[_accountId].motions[_motionId].transferAmount, accounts[_accountId].motions[_motionId].to, accounts[_accountId].motions[_motionId].destinationAccount, accounts[_accountId].motions[_motionId].proposer);
-            // } else if (accounts[_accountId].motions[_motionId].motionType == MotionType.ADD_MEMBER) {
-            //     _addMember(_accountId, _motionId, accounts[_accountId].motions[_motionId].to);
-            // } else if (accounts[_accountId].motions[_motionId].motionType == MotionType.REMOVE_MEMBER) {
-            //     _removeMember(_accountId, _motionId, accounts[_accountId].motions[_motionId].to);
-            // } else if (accounts[_accountId].motions[_motionId].motionType == MotionType.CHANGE_THRESHOLD) {
-            //     _changeThreshold(_accountId, _motionId, accounts[_accountId].motions[_motionId].threshold);
-            // }
-        // }
+            if (motions[_accountId][_motionId].motionType == MotionType.TRANSFER) {
+                _transfer(_accountId, _motionId, motions[_accountId][_motionId].tokenId, motions[_accountId][_motionId].transferAmount, motions[_accountId][_motionId].to, motions[_accountId][_motionId].destinationAccount, motions[_accountId][_motionId].proposer);
+            } else if (motions[_accountId][_motionId].motionType == MotionType.ADD_MEMBER) {
+                _addMember(_accountId, _motionId, motions[_accountId][_motionId].to);
+            } else if (motions[_accountId][_motionId].motionType == MotionType.REMOVE_MEMBER) {
+                _removeMember(_accountId, _motionId, motions[_accountId][_motionId].to);
+            } else if (motions[_accountId][_motionId].motionType == MotionType.CHANGE_THRESHOLD) {
+                _changeThreshold(_accountId, _motionId, motions[_accountId][_motionId].threshold);
+            }
+        }
     }
 
     // ===Deposit===
@@ -390,8 +400,8 @@ contract JointAccounts {
     /// @param _motionId The id of the motion to vote on
     function voteMotion(uint256 _accountId, uint256 _motionId) external {
         _motionChecks(_accountId);
-        // require(accounts[_accountId].motions[_motionId].active, "E19"); // E19 -> "Motion is not active"
-        // require(!votes[_accountId][_motionId][msg.sender] || accounts[_accountId].motions[_motionId].voteCount >= accounts[_accountId].approvalThreshold, "Already voted on this motion");
+        require(motions[_accountId][_motionId].active, "E19"); // E19 -> "Motion is not active"
+        require(!votes[_accountId][_motionId][msg.sender] || motions[_accountId][_motionId].voteCount >= accounts[_accountId].approvalThreshold, "Already voted on this motion");
         _voteMotion(_accountId, _motionId);
     }
 
@@ -401,10 +411,10 @@ contract JointAccounts {
     /// @param _motionId The id of the motion to cancel the vote on
     function cancelVote(uint256 _accountId, uint256 _motionId) external {
         _motionChecks(_accountId);
-        // require(accounts[_accountId].motions[_motionId].active, "E19"); // E19 -> "Motion is not active"
+        // require(motions[_accountId][_motionId].active, "E19"); // E19 -> "Motion is not active"
         // require(votes[_accountId][_motionId][msg.sender], "E20"); // E20 -> Not voted on this motion
         // votes[_accountId][_motionId][msg.sender] = false;
-        // accounts[_accountId].motions[_motionId].voteCount--;
+        // motions[_accountId][_motionId].voteCount--;
 
         emit Vote(_accountId, _motionId, msg.sender, false);
     }
@@ -416,9 +426,9 @@ contract JointAccounts {
     function cancelMotion(uint256 _accountId, uint256 _motionId) external {
         _motionChecks(_accountId);
         require(isMember(_accountId, msg.sender), "E18"); // "E18" -> "Address is not a member"
-        // require(accounts[_accountId].motions[_motionId].active, "E19"); // E19 -> "Motion is not active"
-        // require(accounts[_accountId].motions[_motionId].proposer == msg.sender, "E21"); // E21 -> "Not the proposer of this motion"
-        // accounts[_accountId].motions[_motionId].active = false;
+        // require(motions[_accountId][_motionId].active, "E19"); // E19 -> "Motion is not active"
+        // require(motions[_accountId][_motionId].proposer == msg.sender, "E21"); // E21 -> "Not the proposer of this motion"
+        // motions[_accountId][_motionId].active = false;
 
         emit MotionCancelled(_accountId, _motionId);
     }

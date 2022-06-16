@@ -4,11 +4,6 @@
 
 pragma soliditypp ^0.8.0;
 
-interface IJointAccountsViews {
-    function motionExists(uint256 _accountId, uint256 _motionId) external view returns (bool);
-    function accountExists(uint256 _accountId) external view returns(bool);
-}
-
 enum MotionType { TRANSFER, ADD_MEMBER, REMOVE_MEMBER, CHANGE_THRESHOLD }
 
 struct Motion {
@@ -31,24 +26,25 @@ struct JointAccount {
     bool isMemberOnlyDeposit;
 }
 
-
-// interface Listener {
-//     function accountsCallback(JointAccount memory accounts) external;
-//     function userAccountsCallback(uint256 _accountId, address _userAddress) external;
-// }
-
-// contract JointAccountsViews is Listener {
 contract JointAccountsViews {
+    uint256 private constant NULL = 2**256 - 1;
+    address private constant NULL_ADDRESS = "vite_0000000000000000000000000000000000000000a4f3a0cb58";
+    vitetoken private constant NULL_TOKEN = "tti_000000000000000000004cfd";
+
     address public accountsContractAddress;
     JointAccount[] accounts;
+
+    // memberAddress => accountId[] mapping 
     mapping(address => uint256[]) userAccounts;
-    mapping(uint256 => mapping(vitetoken => uint256)) public balances;
+    // accountId => (tokenId => amount) mapping
+    mapping(uint256 => mapping(vitetoken => uint256)) balances;
+    // accountId => Motion mapping
+    mapping(uint256 => Motion[]) motions;
+    // accountId => (motionId => (address => bool)) mapping
+    // Note that structs cannot contain mappings
+    mapping(uint256 => mapping(uint256 => mapping(address => bool))) votes;
 
-    // function setJointAccountContractAddress(address _contractAddress) external {
-    //     accountsContractAddress = _contractAddress;
-    //     jointsAccountsContract = IJointAccounts(accountsContractAddress);
-    // }
-
+    // Asynchronous callbacks
     function accountsCallback(JointAccount memory _account) external {
         JointAccount storage newAccount = accounts.push();
         newAccount.approvalThreshold = _account.approvalThreshold;
@@ -65,6 +61,28 @@ contract JointAccountsViews {
         balances[_accountId][_tokenId] = _amount;
     }
 
+    function motionCallback(uint256 _accountId, uint256 _motionType, vitetoken _tokenId, uint256 _transferAmount, address _to, uint256 _destinationAccount, uint256 _threshold, address _proposer, uint256 _voteCount, bool _active) external {
+        motions[_accountId].push(Motion(MotionType(_motionType), _tokenId, _transferAmount, _to, _destinationAccount, _threshold, _proposer, _voteCount, _active));
+    }
+
+    function voteCallback(uint256 _accountId, uint256 _motionId, address _voter, uint256 _voteCount, bool _active) external {
+        votes[_accountId][_motionId][_voter] = true;
+        motions[_accountId][_motionId].voteCount = _voteCount;
+        motions[_accountId][_motionId].active = _active;
+    }
+
+    function transferCallback(uint256 _accountId, uint256 _motionId, vitetoken _tokenId, uint256 _transferAmount, address _to, uint256 _destinationAccount) external {
+        balances[_accountId][_tokenId] -= _transferAmount;
+
+        if (_to == NULL_ADDRESS) {
+            // Transfer to another joint account
+            balances[_destinationAccount][_tokenId] += _transferAmount;
+        }
+        
+        motions[_accountId][_motionId].active = false;
+    }
+
+    // ===Getters===
     function getAccount(uint256 _accountId) external view returns(JointAccount memory) {
         return accounts[_accountId];
     }
@@ -85,12 +103,10 @@ contract JointAccountsViews {
         require(_accountId < accounts.length, "E5" ); // "E5" -> "Account does not exist"
     }
 
-    // ===Getters===
-
     /// @notice Returns true if an account exists
     ///
     /// @param _accountId Account Id
-    function accountExists(uint256 _accountId) external view returns(bool) {
+    function accountExists(uint256 _accountId) public view returns(bool) {
         return _accountId < accounts.length;
     }
 
@@ -146,16 +162,14 @@ contract JointAccountsViews {
     /// @notice Returns true if a motion exists
     ///
     /// @param _motionId The queried motion id
-    // function motionExists(uint256 _accountId, uint256 _motionId) internal view returns (bool) {
-    //     require(_accountId < IJointAccounts(accountsContractAddress).accounts().length, "E5");  // "E5" -> "Account does not exist"
-    //     // return _motionId < IJointAccounts(accountsContractAddress).accounts()[_accountId].motions.length;
-    // }
+    function motionExists(uint256 _accountId, uint256 _motionId) public view returns (bool) {
+        require(accountExists(_accountId), "E5");  // "E5" -> "Account does not exist"
+        return _motionId < motions[_accountId].length;
+    }
     
-    // function _basicChecks(uint256 _accountId, uint256 _motionId) private view {
-    //     // Already handled by motionExists
-    //     // require(accountExists(_accountId), "Account does not exist");
-    //     require(motionExists(_accountId, _motionId), "E6"); // "E6" -> "Motion does not exist" 
-    // }
+    function _basicChecks(uint256 _accountId, uint256 _motionId) private view {
+        require(motionExists(_accountId, _motionId), "E6"); // "E6" -> "Motion does not exist" 
+    }
 
     /// @notice Returns the type of a motion
     ///
@@ -163,90 +177,90 @@ contract JointAccountsViews {
     /// @param _motionId The queried motion id
     ///
     /// @return 0 = Transfer, 1 = Add Member, 2 = Remove Member, 3 = Change Threshold
-    // function motionType(uint256 _accountId, uint256 _motionId) external view returns (uint256) {
-    //     _basicChecks(_accountId, _motionId);
-    //     // return uint256(IJointAccounts(accountsContractAddress).accounts()[_accountId].motions[_motionId].motionType);
-    // }
+    function motionType(uint256 _accountId, uint256 _motionId) external view returns (uint256) {
+        _basicChecks(_accountId, _motionId);
+        return uint256(motions[_accountId][_motionId].motionType);
+    }
 
     /// @notice Returns the token id of a motion
     ///
     /// @param _accountId Account id
     /// @param _motionId The queried motion id
-    // function tokenId(uint256 _accountId, uint256 _motionId) external view returns (vitetoken) {
-    //     _basicChecks(_accountId, _motionId);
-    //     return IJointAccounts(accountsContractAddress).accounts()[_accountId].motions[_motionId].tokenId;
-    // }
+    function tokenId(uint256 _accountId, uint256 _motionId) external view returns (vitetoken) {
+        _basicChecks(_accountId, _motionId);
+        return motions[_accountId][_motionId].tokenId;
+    }
 
     /// @notice Returns the transfer amount of a motion
     ///
     /// @param _accountId Account id
     /// @param _motionId The queried motion id
-    // function transferAmount(uint256 _accountId, uint256 _motionId) external view returns (uint256) {
-    //     _basicChecks(_accountId, _motionId);
-    //     return IJointAccounts(accountsContractAddress).accounts()[_accountId].motions[_motionId].transferAmount;
-    // }
+    function transferAmount(uint256 _accountId, uint256 _motionId) external view returns (uint256) {
+        _basicChecks(_accountId, _motionId);
+        return motions[_accountId][_motionId].transferAmount;
+    }
 
     /// @notice Returns the relevant address of a motion
     ///
     /// @param _accountId Account id
     /// @param _motionId The queried motion id
-    // function to(uint256 _accountId, uint256 _motionId) external view returns (address) {
-    //     _basicChecks(_accountId, _motionId);
-    //     return IJointAccounts(accountsContractAddress).accounts()[_accountId].motions[_motionId].to;
-    // }
+    function to(uint256 _accountId, uint256 _motionId) external view returns (address) {
+        _basicChecks(_accountId, _motionId);
+        return motions[_accountId][_motionId].to;
+    }
 
     /// @notice Returns the destination account of a motion
     ///
     /// @param _accountId Account id
     /// @param _motionId The queried motion id
-    // function destinationAccount(uint256 _accountId, uint256 _motionId) external view returns (uint256) {
-    //     _basicChecks(_accountId, _motionId);
-    //     return IJointAccounts(accountsContractAddress).accounts()[_accountId].motions[_motionId].destinationAccount;
-    // }
+    function destinationAccount(uint256 _accountId, uint256 _motionId) external view returns (uint256) {
+        _basicChecks(_accountId, _motionId);
+        return motions[_accountId][_motionId].destinationAccount;
+    }
 
     /// @notice Returns the proposed threshold of a motion
     ///
     /// @param _accountId Account id
     /// @param _motionId The queried motion id
-    // function threshold(uint256 _accountId, uint256 _motionId) external view returns (uint256) {
-    //     _basicChecks(_accountId, _motionId);
-    //     // return IJointAccounts(accountsContractAddress).accounts()[_accountId].motions[_motionId].threshold;
-    // }
+    function threshold(uint256 _accountId, uint256 _motionId) external view returns (uint256) {
+        _basicChecks(_accountId, _motionId);
+        return motions[_accountId][_motionId].threshold;
+    }
 
     /// @notice Returns the proposer of a motion
     ///
     /// @param _accountId Account id
     /// @param _motionId The queried motion id
-    // function proposer(uint256 _accountId, uint256 _motionId) external view returns (address) {
-    //     _basicChecks(_accountId, _motionId);
-    //     // return IJointAccounts(accountsContractAddress).accounts()[_accountId].motions[_motionId].proposer;
-    // }
+    function proposer(uint256 _accountId, uint256 _motionId) external view returns (address) {
+        _basicChecks(_accountId, _motionId);
+        return motions[_accountId][_motionId].proposer;
+    }
 
     /// @notice Returns the number of votes for a motion
     ///
     /// @param _accountId Account id
     /// @param _motionId The queried motion id
-    // function voteCount(uint256 _accountId, uint256 _motionId) external view returns (uint256) {
-    //     _basicChecks(_accountId, _motionId);
-    //     // return IJointAccounts(accountsContractAddress).accounts()[_accountId].motions[_motionId].voteCount;
-    // }
+    function voteCount(uint256 _accountId, uint256 _motionId) external view returns (uint256) {
+        _basicChecks(_accountId, _motionId);
+        return motions[_accountId][_motionId].voteCount;
+    }
 
     /// @notice Returns the number of votes for a motion
     ///
     /// @param _accountId Account id
     /// @param _motionId The queried motion id
-    // function active(uint256 _accountId, uint256 _motionId) external view returns (bool) {
-    //     _basicChecks(_accountId, _motionId);
-    //     // return IJointAccounts(accountsContractAddress).accounts()[_accountId].motions[_motionId].active;
-    // }
+    function active(uint256 _accountId, uint256 _motionId) external view returns (bool) {
+        _basicChecks(_accountId, _motionId);
+        return motions[_accountId][_motionId].active;
+    }
 
     /// @notice Returns true if a member voted for a motion
     ///
     /// @param _accountId Account id
     /// @param _motionId The queried motion id
     /// @param _voter The queried member
-    // function voted(uint256 _accountId, uint256 _motionId, address _voter) external view returns (bool) {
-    //     _basicChecks(_accountId, _motionId);
-    //     return IJointAccounts(accountsContractAddress).votes(_accountId, _motionId, _voter);
-    // }
+    function voted(uint256 _accountId, uint256 _motionId, address _voter) external view returns (bool) {
+        _basicChecks(_accountId, _motionId);
+        return votes[_accountId][_motionId][_voter];
+    }
 }
